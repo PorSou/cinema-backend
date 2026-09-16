@@ -13,8 +13,11 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -24,6 +27,32 @@ import java.util.List;
 public class UserController extends BaseController {
 
     private final UserService userService;
+
+    // ==========================================
+    // CUSTOMER / SELF PROFILE ENDPOINTS (NEW)
+    // ==========================================
+
+    @GetMapping("/me")
+    public ResponseEntity<ApiResponse<UserResponse>> getMyProfile(Authentication authentication) {
+        String email = authentication.getName();
+        return OK(userService.getCurrentUserProfile(email), "Profile fetched successfully");
+    }
+
+    @PutMapping(value = "/me/profile", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<UserResponse>> updateMyProfileWithFile(
+            Authentication authentication,
+            @RequestParam("fullName") String fullName,
+            @RequestParam(value = "phone", required = false) String phone,
+            @RequestParam(value = "avatar", required = false) MultipartFile avatar) {
+
+        String email = authentication.getName();
+        UserResponse response = userService.updateProfileWithAvatar(email, fullName, phone, avatar);
+        return OK(response, "Profile updated successfully");
+    }
+
+    // ==========================================
+    // ADMIN USER MANAGEMENT ENDPOINTS
+    // ==========================================
 
     @PostMapping
     public ResponseEntity<ApiResponse<UserResponse>> createUser(@Valid @RequestBody UserRequest userRequest) {

@@ -18,4 +18,9 @@ public class AuthResponse {
     @Builder.Default
     private String tokenType = "Bearer";
     private UserResponse user;
+
+    // 👇 NEW — tells the frontend whether loginWithKeycloak() just created
+    // a brand-new account or logged into an existing one, so it can show
+    // "Welcome!" vs "Welcome back!" instead of always being silent about it.
+    private boolean isNewUser;
 }

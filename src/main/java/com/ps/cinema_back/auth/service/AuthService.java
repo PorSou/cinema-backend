@@ -18,4 +18,6 @@ public interface AuthService {
     void resetPassword(ResetPasswordRequest request);
 
     AuthResponse refreshToken(RefreshTokenRequest request);
+
+    AuthResponse loginWithKeycloak(KeycloakLoginRequest request);
 }

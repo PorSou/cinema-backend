@@ -17,6 +17,7 @@ public class CinemaResponse {
     private String city;
     private String address; // 👈 Added address
     private String phone;   // 👈 Added phone
+    private String image;
     private Integer totalHalls;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

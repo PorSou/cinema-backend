@@ -4,6 +4,11 @@ import com.google.zxing.BarcodeFormat;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
+import kh.gov.nbc.bakong_khqr.BakongKHQR;
+import kh.gov.nbc.bakong_khqr.model.IndividualInfo;
+import kh.gov.nbc.bakong_khqr.model.KHQRCurrency;
+import kh.gov.nbc.bakong_khqr.model.KHQRData;
+import kh.gov.nbc.bakong_khqr.model.KHQRResponse;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
@@ -14,41 +19,48 @@ import java.util.Base64;
 
 public class BakongKhqrHelper {
 
-    /**
-     * Generates a standard KHQR string format with a valid CRC16 checksum.
-     */
-    public static String generateKhqrPayload(String merchantAccount, String merchantName, String city, BigDecimal amount, String currency, String txnId) {
-        String currCode = "USD".equalsIgnoreCase(currency) ? "840" : "116";
-        String formattedAmount = amount.stripTrailingZeros().toPlainString();
+    // KHQR dynamic QR codes must carry an expiry; Bakong's own spec caps
+    // this at 10 minutes ("The QR code time-out shall not exceed 10 mins").
+    private static final long QR_EXPIRY_MILLIS = 10 * 60 * 1000L;
 
-        // Standard EMVCo payload structure without the checksum trailer yet
-        String payloadWithoutCrc = String.format(
-                "00020101021229370016bakong@cinemaapp0109%s520459995303%s540%s5802KH5915%s6010%s62240120%s6304",
-                merchantAccount, currCode, formattedAmount, merchantName, city, txnId
+    /**
+     * Generates a KHQR payload using the official NBC SDK instead of a
+     * hand-rolled EMVCo/TLV encoder. The SDK owns CRC16, tag lengths, and
+     * field ordering, so this is correct-by-construction rather than
+     * something we have to get right by hand.
+     */
+    public static String generateKhqrPayload(
+            String merchantAccount,
+            String merchantName,
+            String city,
+            BigDecimal amount,
+            String currency,
+            String txnId
+    ) {
+        IndividualInfo individualInfo = new IndividualInfo();
+        individualInfo.setBakongAccountId(merchantAccount);
+        individualInfo.setMerchantName(merchantName);
+        individualInfo.setMerchantCity(city);
+        individualInfo.setCurrency(
+                "USD".equalsIgnoreCase(currency) ? KHQRCurrency.USD : KHQRCurrency.KHR
         );
+        individualInfo.setAmount(amount.doubleValue());
+        individualInfo.setBillNumber(txnId);
+        // Mandatory for dynamic (amount-bearing) KHQR per NBC spec —
+        // omitting this triggers Bakong error code 45 / a scanner-side
+        // "invalid format" rejection.
+        individualInfo.setExpirationTimestamp(System.currentTimeMillis() + QR_EXPIRY_MILLIS);
 
-        // Append valid CRC16 checksum
-        return payloadWithoutCrc + calculateCrc16(payloadWithoutCrc);
-    }
+        KHQRResponse<KHQRData> response = BakongKHQR.generateIndividual(individualInfo);
 
-    /**
-     * Calculates standard EMVCo CRC16-CCITT checksum.
-     */
-    private static String calculateCrc16(String data) {
-        int crc = 0xFFFF;
-        byte[] bytes = data.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            crc = (crc ^ (b << 8));
-            for (int i = 0; i < 8; i++) {
-                if ((crc & 0x8000) != 0) {
-                    crc = (crc << 1) ^ 0x1021;
-                } else {
-                    crc = crc << 1;
-                }
-            }
+        if (response.getKHQRStatus().getCode() != 0) {
+            throw new IllegalStateException(
+                    "KHQR generation failed: " + response.getKHQRStatus().getMessage()
+                            + " (errorCode=" + response.getKHQRStatus().getErrorCode() + ")"
+            );
         }
-        crc = crc & 0xFFFF;
-        return String.format("%04X", crc);
+
+        return response.getData().getQr();
     }
 
     public static String calculateKhqrMd5(String qrString) {

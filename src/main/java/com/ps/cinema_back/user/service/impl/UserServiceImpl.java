@@ -1,5 +1,7 @@
 package com.ps.cinema_back.user.service.impl;
 
+import com.ps.cinema_back.audit.service.AuditLogService;
+import com.ps.cinema_back.cloudinary.service.CloudinaryService;
 import com.ps.cinema_back.common.enums.Role;
 import com.ps.cinema_back.common.exception.ConflictException;
 import com.ps.cinema_back.common.exception.ResourceNotFoundException;
@@ -14,6 +16,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.util.List;
 
@@ -23,6 +27,8 @@ public class UserServiceImpl implements UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final AuditLogService auditLogService;
+    private final CloudinaryService cloudinaryService; // 🌟 Injected Cloudinary service
 
     @Override
     @Transactional
@@ -41,6 +47,12 @@ public class UserServiceImpl implements UserService {
                 .build();
 
         User savedUser = userRepository.save(user);
+
+        auditLogService.logAction(
+                "CREATE_USER",
+                "Created new user account: '" + savedUser.getEmail() + "' with role: " + savedUser.getRole()
+        );
+
         return mapToResponse(savedUser);
     }
 
@@ -56,9 +68,49 @@ public class UserServiceImpl implements UserService {
 
     @Override
     @Transactional(readOnly = true)
+    public UserResponse getCurrentUserProfile(String email) {
+        User user = userRepository
+                .findByEmailAndIsDeletedFalse(email)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with email: " + email));
+
+        return mapToResponse(user);
+    }
+
+    @Override
+    @Transactional
+    public UserResponse updateProfileWithAvatar(String email, String fullName, String phone, MultipartFile file) {
+        User user = userRepository
+                .findByEmailAndIsDeletedFalse(email)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with email: " + email));
+
+        if (fullName != null && !fullName.isBlank()) {
+            user.setFullName(fullName);
+        }
+        if (phone != null) {
+            user.setPhone(phone);
+        }
+
+        // 🌟 Handle Cloudinary avatar image file upload via dialog picker
+        if (file != null && !file.isEmpty()) {
+            String avatarUrl = cloudinaryService.uploadImage(file);
+            user.setAvatarUrl(avatarUrl);
+        }
+
+        User updatedUser = userRepository.save(user);
+
+        auditLogService.logAction(
+                "UPDATE_PROFILE",
+                "User '" + updatedUser.getEmail() + "' updated their personal profile and avatar."
+        );
+
+        return mapToResponse(updatedUser);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<UserResponse> getAllUsers() {
         return userRepository
-                .findAllByIsDeletedFalse() // 👈 Filter out deleted users from the main list
+                .findAllByIsDeletedFalse()
                 .stream()
                 .map(this::mapToResponse)
                 .toList();
@@ -68,7 +120,7 @@ public class UserServiceImpl implements UserService {
     @Transactional(readOnly = true)
     public List<UserResponse> getTrashUsers() {
         return userRepository
-                .findAllByIsDeletedTrue() // 👈 Only return soft-deleted users in trash
+                .findAllByIsDeletedTrue()
                 .stream()
                 .map(this::mapToResponse)
                 .toList();
@@ -111,6 +163,12 @@ public class UserServiceImpl implements UserService {
         }
 
         User updatedUser = userRepository.save(user);
+
+        auditLogService.logAction(
+                "UPDATE_USER",
+                "Updated user account ID " + id + " (Email: " + updatedUser.getEmail() + ", Role: " + updatedUser.getRole() + ")"
+        );
+
         return mapToResponse(updatedUser);
     }
 
@@ -123,6 +181,12 @@ public class UserServiceImpl implements UserService {
 
         user.setIsActive(!Boolean.TRUE.equals(user.getIsActive()));
         User updatedUser = userRepository.save(user);
+
+        auditLogService.logAction(
+                "TOGGLE_USER_STATUS",
+                "Changed active status of user '" + updatedUser.getEmail() + "' (ID: " + id + ") to active = " + updatedUser.getIsActive()
+        );
+
         return mapToResponse(updatedUser);
     }
 
@@ -135,6 +199,11 @@ public class UserServiceImpl implements UserService {
 
         user.setIsDeleted(true);
         userRepository.save(user);
+
+        auditLogService.logAction(
+                "SOFT_DELETE_USER",
+                "Moved user account '" + user.getEmail() + "' (ID: " + id + ") to trash"
+        );
     }
 
     @Override
@@ -150,6 +219,12 @@ public class UserServiceImpl implements UserService {
 
         user.setIsDeleted(false);
         User restoredUser = userRepository.save(user);
+
+        auditLogService.logAction(
+                "RESTORE_USER",
+                "Restored user account '" + restoredUser.getEmail() + "' (ID: " + id + ") from trash"
+        );
+
         return mapToResponse(restoredUser);
     }
 
@@ -160,7 +235,13 @@ public class UserServiceImpl implements UserService {
                 .findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + id));
 
+        String userEmail = user.getEmail();
         userRepository.delete(user);
+
+        auditLogService.logAction(
+                "HARD_DELETE_USER",
+                "Permanently deleted user account '" + userEmail + "' (ID: " + id + ")"
+        );
     }
 
     private UserResponse mapToResponse(User user) {
@@ -168,11 +249,29 @@ public class UserServiceImpl implements UserService {
                 && user.getCreatedAt() != null
                 && user.getUpdatedAt().isAfter(user.getCreatedAt());
 
+        // Resolve full Cloudinary URL or fallback safely
+        String fullAvatarUrl = null;
+        if (user.getAvatarUrl() != null && !user.getAvatarUrl().isEmpty()) {
+            if (user.getAvatarUrl().startsWith("http://") || user.getAvatarUrl().startsWith("https://")) {
+                fullAvatarUrl = user.getAvatarUrl();
+            } else {
+                try {
+                    fullAvatarUrl = ServletUriComponentsBuilder.fromCurrentContextPath()
+                            .path("/")
+                            .path(user.getAvatarUrl().startsWith("/") ? user.getAvatarUrl().substring(1) : user.getAvatarUrl())
+                            .toUriString();
+                } catch (Exception e) {
+                    fullAvatarUrl = user.getAvatarUrl();
+                }
+            }
+        }
+
         return UserResponse.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .fullName(user.getFullName())
                 .phone(user.getPhone())
+                .avatarUrl(fullAvatarUrl)
                 .role(user.getRole())
                 .isActive(user.getIsActive())
                 .isDeleted(user.getIsDeleted())

@@ -9,6 +9,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Getter
 @Setter
@@ -37,6 +38,13 @@ public class PaymentResponse {
     private String bookingNumber;
     private BookingStatus bookingStatus;
 
+    // 👇 NEW — how much was discounted off this booking's total, and which
+    // voucher code did it. Populated from Booking.discountAmount /
+    // Booking.voucherCode in PaymentServiceImpl.mapToResponse(), and
+    // consumed by PaymentController to build the Telegram notification.
+    private BigDecimal discountAmount;
+    private String voucherCode;
+
     // Customer & Cinema details
     private String customerName;
     private String customerEmail;
@@ -46,4 +54,7 @@ public class PaymentResponse {
     private Integer ticketCount;
 
     private LocalDateTime createdAt;
+
+    private List<String> seatDetails;
+    private List<String> concessionDetails;
 }

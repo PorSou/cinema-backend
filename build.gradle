@@ -19,6 +19,10 @@ repositories {
 
 dependencies {
 
+	// 👇 ADD THIS — needed to verify Keycloak-issued JWTs (checks signature
+	// against Keycloak's public keys). This is what KeycloakTokenService uses.
+	implementation 'org.springframework.security:spring-security-oauth2-jose'
+
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-webmvc'
@@ -50,6 +54,10 @@ dependencies {
 
 	implementation 'com.google.zxing:core:3.5.3'
 	implementation 'com.google.zxing:javase:3.5.3'
+
+	implementation 'com.cloudinary:cloudinary-http44:1.38.0'
+
+	implementation 'kh.gov.nbc.bakong_khqr:sdk-java:1.0.0.16'
 }
 
 tasks.named('test') {

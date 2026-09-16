@@ -1,11 +1,15 @@
 package com.ps.cinema_back.movie.service.impl;
 
+
+import com.ps.cinema_back.audit.service.AuditLogService;
+import com.ps.cinema_back.audit.service.impl.AuditLogServiceImpl;
+import com.ps.cinema_back.cloudinary.service.CloudinaryService;
 import com.ps.cinema_back.common.enums.Language;
 import com.ps.cinema_back.common.enums.MovieStatus;
 import com.ps.cinema_back.common.exception.BadRequestException;
 import com.ps.cinema_back.common.exception.ConflictException;
 import com.ps.cinema_back.common.exception.ResourceNotFoundException;
-import com.ps.cinema_back.common.service.FileStorageService;
+
 import com.ps.cinema_back.genre.dto.response.GenreResponse;
 import com.ps.cinema_back.genre.entity.Genre;
 import com.ps.cinema_back.genre.repository.GenreRepository;
@@ -34,7 +38,8 @@ public class MovieServiceImpl implements MovieService {
 
     private final MovieRepository movieRepository;
     private final GenreRepository genreRepository;
-    private final FileStorageService fileStorageService;
+    private final CloudinaryService cloudinaryService;
+    private final AuditLogServiceImpl auditLogService;
 
     @Override
     @Transactional
@@ -47,7 +52,7 @@ public class MovieServiceImpl implements MovieService {
 
         String posterUrl = null;
         if (request.getPosterFile() != null && !request.getPosterFile().isEmpty()) {
-            posterUrl = fileStorageService.saveFile(request.getPosterFile());
+            posterUrl = cloudinaryService.uploadImage(request.getPosterFile());
         }
 
         Set<Genre> genres = fetchAndValidateGenres(request.getGenreIds());
@@ -66,7 +71,15 @@ public class MovieServiceImpl implements MovieService {
                 .isDeleted(false)
                 .build();
 
-        return mapToMovieResponse(movieRepository.save(movie));
+        Movie savedMovie = movieRepository.save(movie);
+
+        // 👈 Catch and log CREATE action
+        auditLogService.logAction(
+                "CREATE_MOVIE",
+                "Created new film listing: '" + savedMovie.getTitle() + "' (ID: " + savedMovie.getId() + ")"
+        );
+
+        return mapToMovieResponse(savedMovie);
     }
 
     @Override
@@ -87,7 +100,6 @@ public class MovieServiceImpl implements MovieService {
     @Override
     @Transactional(readOnly = true)
     public Page<MovieResponse> getTrashMovies(String search, Pageable pageable) {
-        // Corrected to pass all 5 arguments (status=null, language=null, genreId=null, search, isDeleted=true)
         Specification<Movie> spec = MovieSpecification.filterMovies(null, null, null, search, true);
         return movieRepository.findAll(spec, pageable).map(this::mapToMovieResponse);
     }
@@ -98,6 +110,7 @@ public class MovieServiceImpl implements MovieService {
         Movie movie = movieRepository.findByIdAndIsDeletedFalse(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Movie not found with id: " + id));
 
+        String oldTitle = movie.getTitle();
         String trimmedTitle = request.getTitle().trim();
 
         if (!movie.getTitle().equalsIgnoreCase(trimmedTitle) &&
@@ -106,7 +119,7 @@ public class MovieServiceImpl implements MovieService {
         }
 
         if (request.getPosterFile() != null && !request.getPosterFile().isEmpty()) {
-            String newPosterUrl = fileStorageService.saveFile(request.getPosterFile());
+            String newPosterUrl = cloudinaryService.uploadImage(request.getPosterFile());
             movie.setPosterUrl(newPosterUrl);
         }
 
@@ -124,7 +137,15 @@ public class MovieServiceImpl implements MovieService {
         movie.setTrailerUrl(request.getTrailerUrl());
         movie.setReleaseDate(request.getReleaseDate());
 
-        return mapToMovieResponse(movieRepository.save(movie));
+        Movie updatedMovie = movieRepository.save(movie);
+
+        // 👈 Catch and log UPDATE action
+        auditLogService.logAction(
+                "UPDATE_MOVIE",
+                "Updated movie ID " + id + " from title '" + oldTitle + "' to '" + updatedMovie.getTitle() + "'"
+        );
+
+        return mapToMovieResponse(updatedMovie);
     }
 
     @Override
@@ -135,6 +156,12 @@ public class MovieServiceImpl implements MovieService {
 
         movie.setIsDeleted(true);
         movieRepository.save(movie);
+
+        // 👈 Catch and log SOFT DELETE action
+        auditLogService.logAction(
+                "SOFT_DELETE_MOVIE",
+                "Moved movie to trash: '" + movie.getTitle() + "' (ID: " + id + ")"
+        );
     }
 
     @Override
@@ -143,7 +170,14 @@ public class MovieServiceImpl implements MovieService {
         Movie movie = movieRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Movie not found with id: " + id));
 
+        String movieTitle = movie.getTitle();
         movieRepository.delete(movie);
+
+        // 👈 Catch and log HARD DELETE action
+        auditLogService.logAction(
+                "HARD_DELETE_MOVIE",
+                "Permanently deleted movie: '" + movieTitle + "' (ID: " + id + ")"
+        );
     }
 
     @Override
@@ -161,7 +195,15 @@ public class MovieServiceImpl implements MovieService {
         }
 
         movie.setIsDeleted(false);
-        return mapToMovieResponse(movieRepository.save(movie));
+        Movie restoredMovie = movieRepository.save(movie);
+
+        // 👈 Catch and log RESTORE action
+        auditLogService.logAction(
+                "RESTORE_MOVIE",
+                "Restored movie from trash: '" + restoredMovie.getTitle() + "' (ID: " + id + ")"
+        );
+
+        return mapToMovieResponse(restoredMovie);
     }
 
     private Set<Genre> fetchAndValidateGenres(Set<Long> genreIds) {
@@ -183,7 +225,7 @@ public class MovieServiceImpl implements MovieService {
     }
 
     private MovieResponse mapToMovieResponse(Movie movie) {
-        Set<GenreResponse> genreResponses = movie.getGenres() == null ? new HashSet<>() :
+        Set<GenreResponse> genreResponses = movie.getGenres() == null ? new HashSet<>():
                 movie.getGenres().stream()
                         .filter(g -> !Boolean.TRUE.equals(g.getIsDeleted()))
                         .map(g -> GenreResponse.builder()

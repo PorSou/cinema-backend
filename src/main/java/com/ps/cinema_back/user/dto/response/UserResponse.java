@@ -18,6 +18,7 @@ public class UserResponse {
     private String fullName;
     private String phone;
     private Role role;
+    private String avatarUrl;
     private Boolean isActive;
     private Boolean isDeleted;
     private LocalDateTime createdAt;

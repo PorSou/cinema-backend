@@ -1,6 +1,7 @@
 package com.ps.cinema_back.showtime.service.impl;
 
-import com.ps.cinema_back.booking.repository.BookingRepository; // 👈 Add booking repository import
+import com.ps.cinema_back.audit.service.AuditLogService; // 👈 Added AuditLogService import
+import com.ps.cinema_back.booking.repository.BookingRepository;
 import com.ps.cinema_back.common.exception.BadRequestException;
 import com.ps.cinema_back.common.exception.ConflictException;
 import com.ps.cinema_back.common.exception.ResourceNotFoundException;
@@ -24,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -34,25 +36,34 @@ public class ShowtimeServiceImpl implements ShowtimeService {
     private final ShowtimeRepository showtimeRepository;
     private final MovieRepository movieRepository;
     private final HallRepository hallRepository;
-    private final BookingRepository bookingRepository; // 👈 Injected repository to check for dependent bookings
+    private final BookingRepository bookingRepository;
+    private final AuditLogService auditLogService; // 👈 Injected AuditLogService
 
     private static final int CLEANING_BUFFER_MINUTES = 15;
 
     @Override
     @Transactional
     public ShowtimeResponse createShowtime(ShowtimeRequest request) {
+        Long defaultHallId = (request.getHallIds() != null && !request.getHallIds().isEmpty())
+                ? request.getHallIds().get(0)
+                : null;
+
+        if (defaultHallId == null) {
+            throw new BadRequestException("Screening hall is required");
+        }
+
         Movie movie = movieRepository.findByIdAndIsDeletedFalse(request.getMovieId())
                 .orElseThrow(() -> new ResourceNotFoundException("Movie not found with id: " + request.getMovieId()));
 
-        Hall hall = hallRepository.findByIdAndIsDeletedFalse(request.getHallId())
-                .orElseThrow(() -> new ResourceNotFoundException("Hall not found with id: " + request.getHallId()));
+        Hall hall = hallRepository.findByIdAndIsDeletedFalse(defaultHallId)
+                .orElseThrow(() -> new ResourceNotFoundException("Hall not found with id: " + defaultHallId));
 
         LocalDateTime endTime = request.getStartTime()
                 .plusMinutes(movie.getDurationMinutes())
                 .plusMinutes(CLEANING_BUFFER_MINUTES);
 
         if (showtimeRepository.existsOverlappingShowtime(hall.getId(), movie.getId(), request.getStartTime(), endTime)) {
-            throw new ConflictException("Scheduling conflict: '" + movie.getTitle() + "' already has a showtime scheduled in Hall '" + hall.getName() + "' during this timeframe (including the 15-minute buffer).");
+            throw new ConflictException("Scheduling conflict: '" + movie.getTitle() + "' already has a showtime scheduled in Hall '" + hall.getName() + "' during this timeframe.");
         }
 
         Showtime showtime = Showtime.builder()
@@ -64,14 +75,75 @@ public class ShowtimeServiceImpl implements ShowtimeService {
                 .isDeleted(false)
                 .build();
 
-        return mapToResponse(showtimeRepository.save(showtime));
+        Showtime savedShowtime = showtimeRepository.save(showtime);
+
+        // 👈 Catch and log CREATE action
+        auditLogService.logAction(
+                "CREATE_SHOWTIME",
+                "Scheduled showtime for movie '" + movie.getTitle() + "' in Hall '" + hall.getName() + "' at " + request.getStartTime()
+        );
+
+        return mapToResponse(savedShowtime);
     }
 
     @Override
     @Transactional
     public List<ShowtimeResponse> createBatchShowtimes(List<ShowtimeRequest> requests) {
-        return requests.stream()
-                .map(this::createShowtime)
+        List<Showtime> allSavedShowtimes = new ArrayList<>();
+
+        for (ShowtimeRequest request : requests) {
+            Movie movie = movieRepository.findByIdAndIsDeletedFalse(request.getMovieId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Movie not found with id: " + request.getMovieId()));
+
+            int repeatCount = (request.getRepeatDays() != null && request.getRepeatDays() > 0)
+                    ? request.getRepeatDays()
+                    : 1;
+
+            List<Long> targetHallIds;
+            if (request.getHallIds() != null && !request.getHallIds().isEmpty()) {
+                targetHallIds = request.getHallIds();
+            } else if (request.getHallId() != null) {
+                targetHallIds = java.util.Collections.singletonList(request.getHallId());
+            } else {
+                throw new BadRequestException("Screening hall is required");
+            }
+
+            for (Long hallId : targetHallIds) {
+                Hall hall = hallRepository.findByIdAndIsDeletedFalse(hallId)
+                        .orElseThrow(() -> new ResourceNotFoundException("Hall not found with id: " + hallId));
+
+                for (int day = 0; day < repeatCount; day++) {
+                    LocalDateTime adjustedStartTime = request.getStartTime().plusDays(day);
+                    LocalDateTime endTime = adjustedStartTime
+                            .plusMinutes(movie.getDurationMinutes())
+                            .plusMinutes(CLEANING_BUFFER_MINUTES);
+
+                    if (showtimeRepository.existsOverlappingShowtime(hall.getId(), movie.getId(), adjustedStartTime, endTime)) {
+                        throw new ConflictException("Scheduling conflict for '" + movie.getTitle() + "' in Hall '" + hall.getName() + "' on " + adjustedStartTime.toLocalDate() + ".");
+                    }
+
+                    Showtime showtime = Showtime.builder()
+                            .movie(movie)
+                            .hall(hall)
+                            .startTime(adjustedStartTime)
+                            .endTime(endTime)
+                            .basePrice(request.getBasePrice())
+                            .isDeleted(false)
+                            .build();
+
+                    allSavedShowtimes.add(showtimeRepository.save(showtime));
+                }
+            }
+        }
+
+        // 👈 Catch and log BATCH CREATE action
+        auditLogService.logAction(
+                "CREATE_BATCH_SHOWTIMES",
+                "Successfully generated " + allSavedShowtimes.size() + " batch showtimes schedule."
+        );
+
+        return allSavedShowtimes.stream()
+                .map(this::mapToResponse)
                 .collect(Collectors.toList());
     }
 
@@ -154,7 +226,15 @@ public class ShowtimeServiceImpl implements ShowtimeService {
         showtime.setEndTime(endTime);
         showtime.setBasePrice(request.getBasePrice());
 
-        return mapToResponse(showtimeRepository.save(showtime));
+        Showtime updatedShowtime = showtimeRepository.save(showtime);
+
+        // 👈 Catch and log UPDATE action
+        auditLogService.logAction(
+                "UPDATE_SHOWTIME",
+                "Updated showtime ID " + id + " for movie '" + movie.getTitle() + "' in Hall '" + hall.getName() + "'"
+        );
+
+        return mapToResponse(updatedShowtime);
     }
 
     @Override
@@ -164,6 +244,12 @@ public class ShowtimeServiceImpl implements ShowtimeService {
                 .orElseThrow(() -> new ResourceNotFoundException("Showtime not found with id: " + id));
         showtime.setIsDeleted(true);
         showtimeRepository.save(showtime);
+
+        // 👈 Catch and log SOFT DELETE action
+        auditLogService.logAction(
+                "SOFT_DELETE_SHOWTIME",
+                "Moved showtime ID " + id + " (Movie: " + showtime.getMovie().getTitle() + ") to trash"
+        );
     }
 
     @Override
@@ -172,13 +258,19 @@ public class ShowtimeServiceImpl implements ShowtimeService {
         Showtime showtime = showtimeRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Showtime not found with id: " + id));
 
-        // 👇 Prevent crash by checking if active customer bookings are attached to this showtime
         boolean hasBookings = bookingRepository.existsByShowtimeIdAndIsDeletedFalse(id);
         if (hasBookings) {
             throw new BadRequestException("Cannot permanently delete this showtime because active customer bookings are attached to it. Please use soft delete (trash) instead.");
         }
 
+        String movieTitle = showtime.getMovie().getTitle();
         showtimeRepository.delete(showtime);
+
+        // 👈 Catch and log HARD DELETE action
+        auditLogService.logAction(
+                "HARD_DELETE_SHOWTIME",
+                "Permanently deleted showtime ID " + id + " for movie '" + movieTitle + "'"
+        );
     }
 
     @Override
@@ -192,7 +284,15 @@ public class ShowtimeServiceImpl implements ShowtimeService {
         }
 
         showtime.setIsDeleted(false);
-        return mapToResponse(showtimeRepository.save(showtime));
+        Showtime restoredShowtime = showtimeRepository.save(showtime);
+
+        // 👈 Catch and log RESTORE action
+        auditLogService.logAction(
+                "RESTORE_SHOWTIME",
+                "Restored showtime ID " + id + " for movie '" + restoredShowtime.getMovie().getTitle() + "' from trash"
+        );
+
+        return mapToResponse(restoredShowtime);
     }
 
     private ShowtimeResponse mapToResponse(Showtime showtime) {

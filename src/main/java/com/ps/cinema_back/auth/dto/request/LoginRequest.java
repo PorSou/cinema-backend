@@ -15,4 +15,8 @@ public class LoginRequest {
 
     @NotBlank(message = "Password is required")
     private String password;
+
+    @NotBlank(message = "Cloudflare verification token is required")
+    private String turnstileToken; // <--- Added field for Turnstile
+
 }

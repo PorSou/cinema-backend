@@ -12,8 +12,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/v1/cinemas")
@@ -22,9 +24,11 @@ public class CinemaController extends BaseController {
 
     private final CinemaService cinemaService;
 
-    @PostMapping
-    public ResponseEntity<ApiResponse<CinemaResponse>> createCinema(@Valid @RequestBody CinemaRequest request) {
-        return CREATED(cinemaService.createCinema(request), "Cinema created successfully");
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<CinemaResponse>> createCinema(
+            @Valid @RequestPart("request") CinemaRequest request,
+            @RequestPart(value = "file", required = false) MultipartFile file) {
+        return CREATED(cinemaService.createCinema(request, file), "Cinema created successfully");
     }
 
     @GetMapping("/{id}")
@@ -60,11 +64,12 @@ public class CinemaController extends BaseController {
         return OK(PageResponse.of(cinemaService.getTrashCinemas(pageRequest)), "Trash cinemas fetched successfully");
     }
 
-    @PutMapping("/{id}")
+    @PutMapping(value = "/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResponse<CinemaResponse>> updateCinema(
             @PathVariable Long id,
-            @Valid @RequestBody CinemaRequest request) {
-        return OK(cinemaService.updateCinema(id, request), "Cinema updated successfully");
+            @Valid @RequestPart("request") CinemaRequest request,
+            @RequestPart(value = "file", required = false) MultipartFile file) {
+        return OK(cinemaService.updateCinema(id, request, file), "Cinema updated successfully");
     }
 
     @DeleteMapping("/{id}")

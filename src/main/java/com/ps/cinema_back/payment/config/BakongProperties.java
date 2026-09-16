@@ -11,6 +11,8 @@ import org.springframework.context.annotation.Configuration;
 @Setter
 public class BakongProperties {
     private Api api = new Api();
+    private Bearer bearer = new Bearer();
+    private Account account = new Account();
     private Merchant merchant = new Merchant();
 
     @Getter
@@ -19,11 +21,24 @@ public class BakongProperties {
         private String url = "https://api-bakong.nbc.gov.kh/v1";
     }
 
+    // 👇 maps bakong.bearer.token
+    @Getter
+    @Setter
+    public static class Bearer {
+        private String token;
+    }
+
+    // 👇 maps bakong.account.id
+    @Getter
+    @Setter
+    public static class Account {
+        private String id;
+    }
+
+    // 👇 maps bakong.merchant.name / bakong.merchant.city (new — required for the QR payload)
     @Getter
     @Setter
     public static class Merchant {
-        private String token;
-        private String account;
         private String name;
         private String city;
     }

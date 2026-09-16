@@ -29,6 +29,9 @@ public class Cinema extends AuditEntity {
     @Column(nullable = false, length = 20)
     private String phone; // 👈 Added phone
 
+    @Column
+    private String image;
+
     @Column(name = "total_halls", nullable = false)
     @Builder.Default
     private Integer totalHalls = 0;

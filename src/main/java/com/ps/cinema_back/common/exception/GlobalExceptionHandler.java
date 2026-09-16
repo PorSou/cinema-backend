@@ -5,6 +5,9 @@ import com.ps.cinema_back.common.response.ApiBody;
 import com.ps.cinema_back.common.response.ApiResponse;
 import com.ps.cinema_back.common.response.ApiStatus;
 import jakarta.validation.ConstraintViolationException;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.catalina.connector.ClientAbortException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -16,14 +19,39 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    // ----------------------------------------------------
+    // CLIENT DISCONNECT EXCEPTIONS
+    // ----------------------------------------------------
+
+    // 0. Client (browser) closed the connection or navigated away before
+    // the response finished writing — e.g. page refresh, tab close, or a
+    // cancelled poll request. This is normal, expected behavior, NOT a
+    // bug. There is nobody left to send a response to, so we just log
+    // quietly at DEBUG level instead of letting it surface as an ERROR
+    // stack trace via the generic handler below.
+    //
+    // IMPORTANT: this must be declared before handleGeneric(Exception.class)
+    // is checked — Spring matches the MOST SPECIFIC exception type first
+    // regardless of method order, so this works correctly either way, but
+    // keeping it at the top makes the intent clear.
+    @ExceptionHandler({ClientAbortException.class, AsyncRequestNotUsableException.class})
+    public void handleClientAbort(Exception ex) {
+        log.debug("Client disconnected before response completed: {}", ex.getMessage());
+        // Intentionally no response body — the client is already gone,
+        // and attempting to write one would just throw again.
+    }
 
     // ----------------------------------------------------
     // CUSTOM APPLICATION EXCEPTIONS
@@ -134,15 +162,55 @@ public class GlobalExceptionHandler {
         return buildErrorResponse(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Content type '" + ex.getContentType() + "' is not supported");
     }
 
+    // 👇 NEW — 14. 409 CONFLICT (raw DB unique-constraint violation that
+    // slipped through without being caught locally in a service method).
+    // This is a safety net: your registration flow already catches this
+    // itself and rethrows as ConflictException, so this handler mainly
+    // protects OTHER services that insert/update rows with unique
+    // constraints (e.g. a future feature) from ever surfacing a raw
+    // Hibernate/Postgres stack trace as a scary 500 "Unhandled exception".
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Object>> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        log.warn("Data integrity violation: {}", ex.getMostSpecificCause().getMessage());
+        return buildErrorResponse(
+                HttpStatus.CONFLICT,
+                "This record conflicts with existing data. Please check your input and try again."
+        );
+    }
+
     // ----------------------------------------------------
     // CATCH-ALL UNHANDLED SERVER ERRORS
     // ----------------------------------------------------
 
-    // 14. 500 INTERNAL SERVER ERROR
+    // 15. 500 INTERNAL SERVER ERROR
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Object>> handleGeneric(Exception ex) {
-        ex.printStackTrace(); // Keep logged for server debugging
+        // If a plain IOException bubbles up here and is ALSO a client
+        // disconnect (some environments throw IOException directly
+        // instead of wrapping it as ClientAbortException), don't log it
+        // as a full server error either.
+        if (ex instanceof IOException && isClientAbort(ex)) {
+            log.debug("Client disconnected before response completed: {}", ex.getMessage());
+            return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "Client disconnected");
+        }
+
+        log.error("Unhandled exception", ex); // Keep logged for server debugging
         return buildErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "An internal server error occurred. Please try again later.");
+    }
+
+    @ExceptionHandler(BakongAuthException.class)
+    public ResponseEntity<ApiResponse<Object>> handleBakongAuth(BakongAuthException ex) {
+        log.error("Bakong authentication failed: {}", ex.getMessage());
+        return buildErrorResponse(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage());
+    }
+
+    private boolean isClientAbort(Throwable ex) {
+        String msg = ex.getMessage();
+        return msg != null && (
+                msg.contains("Broken pipe") ||
+                        msg.contains("Connection reset") ||
+                        msg.contains("aborted by the software")
+        );
     }
 
     // ----------------------------------------------------

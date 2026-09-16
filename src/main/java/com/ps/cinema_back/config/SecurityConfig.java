@@ -22,19 +22,32 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+
         http
-                // 1. MUST ENABLE CORS TO PICK UP YOUR CorsConfig BEAN
+                // 1. Enable CORS
                 .cors(Customizer.withDefaults())
 
+                // 2. Disable CSRF because this is a stateless REST API
                 .csrf(AbstractHttpConfigurer::disable)
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+
+                // 3. Stateless authentication
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                )
+
                 .authorizeHttpRequests(auth -> auth
-                        // 2. MUST ALLOW PREFLIGHT OPTIONS REQUESTS GLOBALLY
+
+                        // =========================================================
+                        // PREFLIGHT
+                        // =========================================================
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
 
-                        // 3. PUBLIC AUTH & STATIC ENDPOINTS
+                        // =========================================================
+                        // PUBLIC AUTH / SWAGGER / UPLOADS
+                        // =========================================================
                         .requestMatchers(
                                 "/api/v1/auth/**",
+                                "/api/v1/settings/public",
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
                                 "/v3/api-docs/**",
@@ -42,66 +55,350 @@ public class SecurityConfig {
                                 "/uploads/**"
                         ).permitAll()
 
-                        // 4. PUBLIC BROWSING (Allow unauthenticated visitors to view homepage)
-                        .requestMatchers(HttpMethod.GET, "/api/v1/genres/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/movies/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/cinemas/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/halls/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/seats/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/showtimes/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/bookings/showtime/*/layout").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/payments/verify-bakong/**").permitAll()
+                        // =========================================================
+                        // PUBLIC BROWSING
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/genres/**"
+                        ).permitAll()
 
-                        // 5. GENRE MANAGEMENT (Staff & Admin)
-                        .requestMatchers(HttpMethod.POST, "/api/v1/genres/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/genres/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/genres/**").hasAnyRole("STAFF", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/movies/**"
+                        ).permitAll()
 
-                        // 6. MOVIE MANAGEMENT (Staff & Admin)
-                        .requestMatchers(HttpMethod.POST, "/api/v1/movies/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/movies/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/movies/**").hasAnyRole("STAFF", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/cinemas/**"
+                        ).permitAll()
 
-                        // 7. CINEMA, HALL, SEAT, SHOWTIME MANAGEMENT (Staff & Admin)
-                        .requestMatchers(HttpMethod.POST, "/api/v1/cinemas/**", "/api/v1/halls/**", "/api/v1/seats/**", "/api/v1/showtimes/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/cinemas/**", "/api/v1/halls/**", "/api/v1/seats/**", "/api/v1/showtimes/**").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/cinemas/**", "/api/v1/halls/**", "/api/v1/seats/**", "/api/v1/showtimes/**").hasAnyRole("STAFF", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/halls/**"
+                        ).permitAll()
 
-                        // 8. ADMIN-ONLY OPERATIONS & DESTRUCTION
-                        .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/users/trash").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/users/*/restore").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/users/*/hard").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/payments/*/refund").hasRole("ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/seats/**"
+                        ).permitAll()
 
-                        // 9. USER MANAGEMENT
-                        .requestMatchers(HttpMethod.POST, "/api/v1/users/staff").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PATCH, "/api/v1/users/*/toggle-status").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/v1/users/*").hasAnyRole("ADMIN", "STAFF")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/users").hasAnyRole("ADMIN", "STAFF")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/users/page").hasAnyRole("ADMIN", "STAFF")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/users/*").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/users/*").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/showtimes/**"
+                        ).permitAll()
 
-                        // 10. BOOKING & SCANNER
-                        .requestMatchers(HttpMethod.POST, "/api/v1/bookings").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/bookings/my-bookings").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/bookings/{id}").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/bookings/number/**").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/v1/bookings/*/cancel").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/bookings").hasAnyRole("STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/api/v1/tickets/scan/**").hasAnyRole("STAFF", "ADMIN")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/bookings/showtime/*/layout"
+                        ).permitAll()
 
-                        // 11. PAYMENTS
-                        .requestMatchers(HttpMethod.POST, "/api/v1/payments/khqr/generate").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/payments/booking/**").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/payments/transaction/**").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/payments/{id}").hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/v1/payments").hasAnyRole("STAFF", "ADMIN")
+                        // =========================================================
+                        // BAKONG PAYMENT VERIFICATION
+                        // =========================================================
+                        // Frontend calls our backend to verify the KHQR payment.
+                        // Bakong's own API authentication is handled inside
+                        // BakongClient.java, NOT here.
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/payments/verify-bakong/**"
+                        ).permitAll()
 
+                        // =========================================================
+                        // PUBLIC F&B
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/concessions/**"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/concession-categories/**"
+                        ).permitAll()
+
+                        // =========================================================
+                        // PUBLIC REVIEWS / VOUCHER
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/reviews/movie/**"
+                        ).permitAll()
+
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/vouchers/apply"
+                        ).permitAll()
+
+                        // =========================================================
+                        // GENRE MANAGEMENT
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/genres/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/genres/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/genres/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // MOVIE MANAGEMENT
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/movies/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/movies/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/movies/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // CINEMA / HALL / SEAT / SHOWTIME MANAGEMENT
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/cinemas/**",
+                                "/api/v1/halls/**",
+                                "/api/v1/seats/**",
+                                "/api/v1/showtimes/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/cinemas/**",
+                                "/api/v1/halls/**",
+                                "/api/v1/seats/**",
+                                "/api/v1/showtimes/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/cinemas/**",
+                                "/api/v1/halls/**",
+                                "/api/v1/seats/**",
+                                "/api/v1/showtimes/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // CONCESSION MANAGEMENT
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/concessions/**",
+                                "/api/v1/concession-categories/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/concessions/**",
+                                "/api/v1/concession-categories/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/concessions/**",
+                                "/api/v1/concession-categories/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // ADMIN
+                        // =========================================================
+                        .requestMatchers(
+                                "/api/v1/admin/reviews/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                "/api/v1/admin/analytics/popularity/**"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                "/api/v1/admin/vouchers/**"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                "/api/v1/admin/**"
+                        ).hasRole("ADMIN")
+
+                        // =========================================================
+                        // USER TRASH
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/users/trash"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/users/*/restore"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/users/*/hard"
+                        ).hasRole("ADMIN")
+
+                        // =========================================================
+                        // REFUND
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/payments/*/refund"
+                        ).hasRole("ADMIN")
+
+                        // =========================================================
+                        // USER MANAGEMENT
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/users/staff"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PATCH,
+                                "/api/v1/users/*/toggle-status"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/v1/users/*"
+                        ).hasAnyRole("ADMIN", "STAFF")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/users"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/users/page"
+                        ).hasRole("ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/users/*"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/users/*"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        // =========================================================
+                        // BOOKING
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/bookings"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/bookings/my-bookings"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/bookings/{id}"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/bookings/number/**"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/v1/bookings/*/cancel"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/bookings"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // TICKET SCANNER
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/tickets/scan/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // PAYMENTS
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/payments/khqr/generate"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/payments/booking/**"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/payments/transaction/**"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/payments/{id}"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/v1/payments"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // FAVORITES
+                        // =========================================================
+                        .requestMatchers(
+                                "/api/v1/favorites/**"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        // =========================================================
+                        // REVIEWS
+                        // =========================================================
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/v1/reviews"
+                        ).hasAnyRole("CUSTOMER", "STAFF", "ADMIN")
+
+                        // =========================================================
+                        // NOTIFICATIONS
+                        // =========================================================
+                        .requestMatchers(
+                                "/api/v1/notifications/**"
+                        ).hasAnyRole("STAFF", "ADMIN")
+
+                        // =========================================================
+                        // EVERYTHING ELSE REQUIRES AUTHENTICATION
+                        // =========================================================
                         .anyRequest().authenticated()
                 )
-                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+
+                // JWT authentication
+                .addFilterBefore(
+                        jwtAuthFilter,
+                        UsernamePasswordAuthenticationFilter.class
+                );
 
         return http.build();
     }

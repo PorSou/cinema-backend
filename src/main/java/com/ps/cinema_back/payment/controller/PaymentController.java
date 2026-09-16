@@ -5,9 +5,13 @@ import com.ps.cinema_back.common.exception.ResourceNotFoundException;
 import com.ps.cinema_back.common.exception.UnauthorizedException;
 import com.ps.cinema_back.common.response.ApiResponse;
 import com.ps.cinema_back.common.response.PageResponse;
+import com.ps.cinema_back.payment.dto.request.CashBookingRequest;
 import com.ps.cinema_back.payment.dto.request.KhqrGenerateRequest;
+import com.ps.cinema_back.payment.dto.request.PaymentRequest;
+import com.ps.cinema_back.payment.dto.response.BakongCheckMd5Response;
 import com.ps.cinema_back.payment.dto.response.PaymentResponse;
 import com.ps.cinema_back.payment.service.PaymentService;
+import com.ps.cinema_back.telegrambot.service.TelegramService;
 import com.ps.cinema_back.user.entity.User;
 import com.ps.cinema_back.user.repository.UserRepository;
 import io.swagger.v3.oas.annotations.Operation;
@@ -32,31 +36,98 @@ public class PaymentController extends BaseController {
 
     private final PaymentService paymentService;
     private final UserRepository userRepository;
+    private final TelegramService telegramService;
 
-    @PostMapping("/khqr/generate")
-    @Operation(summary = "Generate Bakong KHQR code for a pending booking")
-    public ResponseEntity<ApiResponse<PaymentResponse>> generateKhqr(
-            @Parameter(hidden = true) Authentication authentication,
-            @Valid @RequestBody KhqrGenerateRequest request) {
-
-        User currentUser = getAuthenticatedUser(authentication);
-        return OK(paymentService.generateKhqr(currentUser.getId(), request), "Bakong KHQR generated successfully");
-    }
-
-    // Added to match frontend polling request: POST /api/v1/payments/khqr/check-md5
     @PostMapping("/khqr/check-md5")
-    @Operation(summary = "Verify Bakong transaction by checking MD5 status")
-    public ResponseEntity<ApiResponse<PaymentResponse>> checkBakongMd5(
+    @Operation(summary = "Poll Bakong transaction status by MD5 (non-mutating check)")
+    public ResponseEntity<ApiResponse<BakongCheckMd5Response>> checkBakongMd5(
             @RequestBody Map<String, String> payload) {
 
         String transactionId = payload.get("transactionId");
         if (transactionId == null || transactionId.isBlank()) {
-            // Fallback if transactionId is passed directly as a string or different key
             transactionId = payload.get("md5") != null ? payload.get("md5") : "";
         }
 
-        return OK(paymentService.verifyBakongPayment(transactionId), "Payment verified successfully");
+        return OK(paymentService.checkPaymentStatus(transactionId), "Status checked");
     }
+
+    // The atomic create-booking + confirm-cash-payment endpoint your seat
+    // page's confirmation modal calls. This is the ONLY place a voucher
+    // discount is currently supported, per your request — every other
+    // flow below is unchanged.
+    @PostMapping("/cash-booking")
+    @Operation(summary = "Create booking and confirm Counter Cash payment atomically")
+    public ResponseEntity<ApiResponse<PaymentResponse>> bookAndPayCash(
+            @Parameter(hidden = true) Authentication authentication,
+            @Valid @RequestBody CashBookingRequest request) {
+
+        User currentUser = getAuthenticatedUser(authentication);
+        PaymentResponse response = paymentService.bookAndPayCash(currentUser.getId(), request);
+
+        try {
+            // 👇 NEW: pass the discount + voucher code through so the
+            // Telegram message shows the same Subtotal / Voucher Discount /
+            // Total breakdown the customer saw on the confirmation screen.
+            telegramService.sendBookingSuccessNotification(
+                    response.getBookingNumber(),
+                    response.getMovieTitle(),
+                    response.getCinemaName(),
+                    response.getHallName(),
+                    response.getSeatDetails(),
+                    response.getConcessionDetails(),
+                    response.getAmount().doubleValue(),
+                    response.getDiscountAmount() != null ? response.getDiscountAmount().doubleValue() : null,
+                    response.getVoucherCode()
+            );
+        } catch (Exception e) {
+            // booking/payment still succeeds even if telegram fails
+        }
+
+        return OK(response, "Cash booking confirmed successfully");
+    }
+
+    // 👇 Unchanged — this flow pays for an already-existing booking and has
+    // no voucher field on its request DTO, so it keeps using the original
+    // 7-argument sendBookingSuccessNotification overload exactly as before.
+    @PostMapping("/cash")
+    @Operation(summary = "Confirm booking with Counter Cash payment")
+    public ResponseEntity<ApiResponse<PaymentResponse>> payWithCash(
+            @Parameter(hidden = true) Authentication authentication,
+            @Valid @RequestBody PaymentRequest request) {
+
+        User currentUser = getAuthenticatedUser(authentication);
+
+        PaymentResponse paymentResponse = paymentService.processCashPayment(currentUser.getId(), request);
+
+        try {
+            telegramService.sendBookingSuccessNotification(
+                    paymentResponse.getBookingNumber(),
+                    paymentResponse.getMovieTitle(),
+                    paymentResponse.getCinemaName(),
+                    paymentResponse.getHallName(),
+                    paymentResponse.getSeatDetails(),
+                    paymentResponse.getConcessionDetails(),
+                    paymentResponse.getAmount().doubleValue()
+            );
+        } catch (Exception e) {
+            // Log the error so booking still succeeds even if telegram fails
+        }
+
+        return OK(paymentResponse, "Cash booking confirmed successfully");
+    }
+
+//    @PostMapping("/khqr/check-md5")
+//    @Operation(summary = "Verify Bakong transaction by checking MD5 status")
+//    public ResponseEntity<ApiResponse<PaymentResponse>> checkBakongMd5(
+//            @RequestBody Map<String, String> payload) {
+//
+//        String transactionId = payload.get("transactionId");
+//        if (transactionId == null || transactionId.isBlank()) {
+//            transactionId = payload.get("md5") != null ? payload.get("md5") : "";
+//        }
+//
+//        return OK(paymentService.verifyBakongPayment(transactionId), "Payment verified successfully");
+//    }
 
     @PostMapping("/verify-bakong/{transactionId}")
     @Operation(summary = "Verify Bakong transaction callback and confirm booking")
@@ -94,6 +165,18 @@ public class PaymentController extends BaseController {
         Pageable pageRequest = PageRequest.of(page, size, sort);
 
         return OK(PageResponse.of(paymentService.getAllPayments(pageRequest)), "All payments fetched successfully");
+    }
+
+    @PostMapping("/khqr/generate")
+    @Operation(summary = "Generate a Bakong KHQR code for an existing booking")
+    public ResponseEntity<ApiResponse<PaymentResponse>> generateKhqr(
+            @Parameter(hidden = true) Authentication authentication,
+            @Valid @RequestBody KhqrGenerateRequest request) {
+
+        User currentUser = getAuthenticatedUser(authentication);
+        PaymentResponse response = paymentService.generateKhqr(currentUser.getId(), request);
+
+        return OK(response, "KHQR payment generated successfully");
     }
 
     @PutMapping("/{id}/refund")

@@ -25,13 +25,16 @@ public class User extends SoftDeleteEntity {
     @Column(nullable = false, unique = true)
     private String email;
 
-    @Column(nullable = false)
+    @Column(nullable = true)
     private String password;
 
     @Column(name = "full_name", nullable = false)
     private String fullName;
 
     private String phone;
+
+    @Column(name = "avatar_url") // 🌟 Stores relative file path (e.g., uploads/avatars/file.png)
+    private String avatarUrl;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

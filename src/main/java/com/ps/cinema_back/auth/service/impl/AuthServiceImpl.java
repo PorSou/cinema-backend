@@ -4,15 +4,18 @@ import com.ps.cinema_back.auth.dto.request.*;
 import com.ps.cinema_back.auth.dto.response.AuthResponse;
 import com.ps.cinema_back.auth.service.AuthService;
 import com.ps.cinema_back.auth.service.OtpService;
+import com.ps.cinema_back.auth.service.TurnstileService; // <--- Import TurnstileService
 import com.ps.cinema_back.common.enums.Role;
 import com.ps.cinema_back.common.exception.BadRequestException;
 import com.ps.cinema_back.common.exception.ConflictException;
 import com.ps.cinema_back.common.exception.ResourceNotFoundException;
 import com.ps.cinema_back.security.JwtUtils;
+import com.ps.cinema_back.security.KeycloakTokenService;
 import com.ps.cinema_back.user.dto.response.UserResponse;
 import com.ps.cinema_back.user.entity.User;
 import com.ps.cinema_back.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,10 +28,68 @@ public class AuthServiceImpl implements AuthService {
     private final OtpService otpService;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtils jwtUtils;
+    private final TurnstileService turnstileService; // <--- Inject TurnstileService
+
+    private final KeycloakTokenService keycloakTokenService; // add to fields (RequiredArgsConstructor picks it up)
+
+    @Override
+    @Transactional
+    public AuthResponse loginWithKeycloak(KeycloakLoginRequest request) {
+        org.springframework.security.oauth2.jwt.Jwt jwt =
+                keycloakTokenService.verifyAndDecode(request.getAccessToken());
+
+        String email = jwt.getClaimAsString("email");
+        String fullName = jwt.getClaimAsString("name");
+
+        if (email == null || email.isBlank()) {
+            throw new BadRequestException("Social login did not provide an email address.");
+        }
+
+        // Track whether we're creating a brand-new account or reusing an
+        // existing one, so the frontend can show the right message.
+        boolean[] isNewUser = {false};
+
+        User user = userRepository.findByEmailAndIsDeletedFalse(email)
+                .orElseGet(() -> {
+                    isNewUser[0] = true;
+                    User newUser = User.builder()
+                            .fullName(fullName != null ? fullName : email)
+                            .email(email)
+                            .password(null)
+                            .role(Role.CUSTOMER)
+                            .isActive(true)
+                            .build();
+                    return userRepository.save(newUser);
+                });
+
+        if (!Boolean.TRUE.equals(user.getIsActive())) {
+            user.setIsActive(true);
+            userRepository.save(user);
+        }
+
+        String accessToken = jwtUtils.generateAccessToken(user.getEmail(), user.getRole().name());
+        String refreshToken = jwtUtils.generateRefreshToken(user.getEmail());
+
+        return AuthResponse.builder()
+                .accessToken(accessToken)
+                .refreshToken(refreshToken)
+                .user(mapToUserResponse(user))
+                .isNewUser(isNewUser[0])   // 👈 new field
+                .build();
+    }
 
     @Override
     @Transactional
     public void register(RegisterRequest request) {
+        // 1. Verify Cloudflare Turnstile token first
+        boolean isHuman = turnstileService.verifyToken(request.getTurnstileToken());
+        if (!isHuman) {
+            throw new BadRequestException("Cloudflare verification failed. Please complete the human check.");
+        }
+
+        // 2. Check if email already exists (app-level check — catches the
+        // common case cheaply without ever touching the database's unique
+        // constraint).
         if (userRepository.existsByEmailAndIsDeletedFalse(request.getEmail())) {
             throw new ConflictException("Email is already registered: " + request.getEmail());
         }
@@ -42,8 +103,19 @@ public class AuthServiceImpl implements AuthService {
                 .isActive(false)
                 .build();
 
-        User savedUser = userRepository.save(user);
-        otpService.generateAndSendOtp(savedUser);
+        // 👇 NEW: safety net for the case the app-level check above misses —
+        // e.g. a row with this email still exists but is soft-deleted
+        // (isDeleted = true), so existsByEmailAndIsDeletedFalse() returns
+        // false even though the DB's unique constraint on `email` still
+        // blocks the insert. Without this, that scenario surfaces as a raw
+        // 500 "Unhandled exception" with a full Hibernate/Postgres stack
+        // trace instead of a clean, expected 409 response.
+        try {
+            User savedUser = userRepository.save(user);
+            otpService.generateAndSendOtp(savedUser);
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflictException("Email is already registered: " + request.getEmail());
+        }
     }
 
     @Override
@@ -96,8 +168,29 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional(readOnly = true)
     public AuthResponse login(LoginRequest request) {
+
+        // 1. Verify Cloudflare Turnstile token first
+        boolean isHuman = turnstileService.verifyToken(request.getTurnstileToken());
+        if (!isHuman) {
+            throw new BadRequestException("Cloudflare verification failed. Please complete the human check.");
+        }
+
+        // 2. Existing login validation logic
         User user = userRepository.findByEmailAndIsDeletedFalse(request.getEmail())
                 .orElseThrow(() -> new BadRequestException("Invalid email or password"));
+
+        // 👇 FIXED: this null check now runs BEFORE passwordEncoder.matches().
+        // A social-login-only account (Google/GitHub/Facebook) has
+        // password = null. Calling passwordEncoder.matches(raw, null)
+        // throws a NullPointerException — which is NOT a BadRequestException,
+        // so it was falling through to the generic 500 handler instead of
+        // showing this friendly message. Checking null first avoids ever
+        // calling matches() with a null encoded password.
+        if (user.getPassword() == null) {
+            throw new BadRequestException(
+                    "This account uses social login. Please sign in with Google, GitHub, or Facebook instead."
+            );
+        }
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new BadRequestException("Invalid email or password");

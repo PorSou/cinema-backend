@@ -17,6 +17,12 @@ public class AuthController extends BaseController {
 
     private final AuthService authService;
 
+    @PostMapping("/keycloak")
+    public ResponseEntity<ApiResponse<AuthResponse>> loginWithKeycloak(
+            @Valid @RequestBody KeycloakLoginRequest request) {
+        return OK(authService.loginWithKeycloak(request), "Logged in successfully via social login");
+    }
+
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<Void>> register(@Valid @RequestBody RegisterRequest request) {
         authService.register(request);
@@ -30,6 +36,7 @@ public class AuthController extends BaseController {
 
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<AuthResponse>> login(@Valid @RequestBody LoginRequest request) {
+        // Automatically passes the LoginRequest (containing the turnstileToken) to AuthService
         return OK(authService.login(request), "Logged in successfully");
     }
 

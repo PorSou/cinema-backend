@@ -1,5 +1,6 @@
 package com.ps.cinema_back.booking.dto.response;
 
+import com.ps.cinema_back.common.enums.SeatAvailabilityStatus;
 import com.ps.cinema_back.common.enums.SeatType;
 import lombok.*;
 
@@ -32,6 +33,13 @@ public class ShowtimeSeatLayoutResponse {
         private Integer gridX;
         private Integer gridY;
         private BigDecimal calculatedPrice;
+
+        // Kept for backward compatibility with existing frontend checks
+        // (true only when availabilityStatus == AVAILABLE).
         private boolean isAvailable;
+
+        // New: distinguishes a mid-checkout hold (RESERVED) from a
+        // permanently taken seat (BOOKED).
+        private SeatAvailabilityStatus availabilityStatus;
     }
 }

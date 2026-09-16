@@ -91,6 +91,11 @@ public class BookingController extends BaseController {
         return OK(bookingService.cancelBooking(id, currentUser.getId()), "Booking cancelled successfully");
     }
 
+    @PutMapping("/{id}/confirm-cash")
+    public ResponseEntity<ApiResponse<BookingResponse>> confirmCashBooking(@PathVariable Long id) {
+        return OK(bookingService.confirmCashBooking(id), "Cash booking confirmed successfully");
+    }
+
     private User getAuthenticatedUser(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated()) {
             throw new UnauthorizedException("User is not authenticated");

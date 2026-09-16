@@ -29,8 +29,22 @@ public class Booking extends AuditEntity {
     @Builder.Default
     private BookingStatus status = BookingStatus.PENDING;
 
+    // 👇 NEW: this is now the FINAL amount charged (subtotal - discountAmount).
+    // Previously this held the raw subtotal with no voucher applied, which is
+    // why the ticket page and Telegram bot always showed the pre-discount price.
     @Column(name = "total_amount", nullable = false, precision = 10, scale = 2)
     private BigDecimal totalAmount;
+
+    // 👇 NEW: how much was knocked off by the voucher, if any. Defaults to
+    // ZERO so existing rows / bookings without a voucher are unaffected.
+    @Column(name = "discount_amount", nullable = false, precision = 10, scale = 2)
+    @Builder.Default
+    private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    // 👇 NEW: which voucher code was redeemed, kept for the receipt/ticket
+    // and for support/audit purposes. Null when no voucher was used.
+    @Column(name = "voucher_code", length = 64)
+    private String voucherCode;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)

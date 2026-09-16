@@ -1,6 +1,7 @@
 package com.ps.cinema_back.booking.repository;
 
 import com.ps.cinema_back.booking.entity.Booking;
+import com.ps.cinema_back.booking.entity.BookingSeat;
 import com.ps.cinema_back.common.enums.BookingStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -17,6 +18,7 @@ import java.util.Set;
 @Repository
 public interface BookingRepository extends JpaRepository<Booking, Long> {
 
+    List<Booking> findAllByStatusAndCreatedAtBefore(BookingStatus status, LocalDateTime cutoff);
 
     // 👇 Add this method to check if any active bookings are tied to a showtime
     boolean existsByShowtimeIdAndIsDeletedFalse(Long showtimeId);
@@ -56,4 +58,17 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     );
 
     List<Booking> findAllByStatusAndCreatedAtBeforeAndIsDeletedFalse(BookingStatus status, LocalDateTime threshold);
+
+    // Returns the active BookingSeat rows for a showtime, so we can tell
+// RESERVED (PENDING) apart from BOOKED (CONFIRMED/CHECKED_IN) per seat.
+    @Query("""
+    SELECT bs FROM BookingSeat bs
+    WHERE bs.booking.showtime.id = :showtimeId
+      AND bs.booking.status IN (:activeStatuses)
+      AND bs.booking.isDeleted = false
+""")
+    List<BookingSeat> findActiveBookingSeatsForShowtime(
+            @Param("showtimeId") Long showtimeId,
+            @Param("activeStatuses") List<BookingStatus> activeStatuses
+    );
 }
