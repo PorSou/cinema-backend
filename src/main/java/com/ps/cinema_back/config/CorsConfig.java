@@ -16,8 +16,11 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
 
-        // 1. Allow Next.js frontend origin
-        configuration.setAllowedOrigins(List.of("http://localhost:3000"));
+        // 1. Allow Localhost and Vercel frontend origins
+        configuration.setAllowedOrigins(Arrays.asList(
+                "http://localhost:3000",
+                "https://cinema-frontend-py8v.vercel.app"
+        ));
 
         // 2. Allow all HTTP methods
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
