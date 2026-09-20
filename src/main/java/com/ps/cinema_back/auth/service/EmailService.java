@@ -1,56 +1,69 @@
 package com.ps.cinema_back.auth.service;
 
 import com.ps.cinema_back.booking.entity.Booking;
+import com.ps.cinema_back.common.exception.BadRequestException;
 import com.ps.cinema_back.payment.util.BakongKhqrHelper;
-import jakarta.mail.internet.MimeMessage;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.ByteArrayResource;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
 
-import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class EmailService {
 
-    private final JavaMailSender mailSender;
+    private static final String BREVO_URL = "https://api.brevo.com/v3/smtp/email";
 
+    @Value("${brevo.api-key}") private String apiKey;
+    @Value("${brevo.sender-email}") private String senderEmail;
+    @Value("${brevo.sender-name:CinemaX}") private String senderName;
+
+    private final RestTemplate rest = buildRestTemplate();
+
+    private static RestTemplate buildRestTemplate() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(5000);
+        factory.setReadTimeout(10000);
+        return new RestTemplate(factory);
+    }
+
+    /** Synchronous on purpose: if it fails, the caller must know. */
     public void sendOtpEmail(String toEmail, String otpCode) {
-        log.info("📧 [OTP DISPATCH] Destination: {} | Code: {}", toEmail, otpCode);
+        String html = "<div style=\"font-family:Arial,sans-serif;max-width:480px;margin:auto\">"
+                + "<h2>CinemaX verification code</h2>"
+                + "<p style=\"font-size:32px;letter-spacing:6px;font-weight:bold\">" + otpCode + "</p>"
+                + "<p>This code expires in 5 minutes. If you didn't request it, ignore this email.</p>"
+                + "</div>";
         try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setTo(toEmail);
-            message.setSubject("Cinema App - Email Verification Code");
-            message.setText("Your OTP verification code is: " + otpCode + "\n\nThis code expires in 5 minutes.");
-            mailSender.send(message);
+            send(toEmail, "CinemaX - Email Verification Code", html, null);
+            log.info("OTP email sent to {}", toEmail);
         } catch (Exception e) {
-            log.warn("⚠️ Could not deliver OTP email to '{}': {}", toEmail, e.getMessage());
+            log.error("Could not deliver OTP email to '{}': {}", toEmail, e.getMessage());
+            throw new BadRequestException("Could not send the verification email. Please try again in a moment.");
         }
     }
 
     @Async
     public void sendETicketEmail(Booking booking) {
         String recipient = booking.getUser().getEmail();
-        log.info("🎫 Sending E-Ticket email to {} for Booking #{}", recipient, booking.getBookingNumber());
+        log.info("Sending E-Ticket email to {} for Booking #{}", recipient, booking.getBookingNumber());
 
         try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            String qr = BakongKhqrHelper.generateQrBase64Image("TICKET:" + booking.getBookingNumber(), 250, 250);
+            // Brevo wants raw base64, so strip a "data:image/png;base64," prefix if the helper adds one
+            String qrData = qr.contains(",") ? qr.substring(qr.indexOf(',') + 1) : qr;
 
-            helper.setTo(recipient);
-            helper.setSubject("🎬 Your Cinema E-Ticket: Booking #" + booking.getBookingNumber());
-
-            // Generate Ticket QR Code content (contains booking number for staff scanner)
-            String ticketQrRaw = "TICKET:" + booking.getBookingNumber();
-            String qrBase64 = BakongKhqrHelper.generateQrBase64Image(ticketQrRaw, 250, 250);
-
-            String htmlContent = String.format("""
+            String html = String.format("""
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #ddd; border-radius: 10px; overflow: hidden;">
                     <div style="background-color: #e50914; color: white; padding: 20px; text-align: center;">
                         <h1 style="margin: 0;">CINEMA E-TICKET</h1>
@@ -66,10 +79,9 @@ public class EmailService {
                             <tr><td><strong>Total Paid:</strong></td><td style="color: green; font-weight: bold;">$%s</td></tr>
                             <tr><td><strong>Customer:</strong></td><td>%s</td></tr>
                         </table>
-                        <div style="text-align: center; margin-top: 25px;">
-                            <p style="font-size: 13px; color: #888; margin-bottom: 8px;">Present this QR code to cinema staff at entrance</p>
-                            <img src="%s" alt="Ticket QR Code" style="border: 2px solid #ccc; border-radius: 8px;"/>
-                        </div>
+                        <p style="text-align:center; margin-top:25px; font-size:13px; color:#888;">
+                            Your entry QR code is attached (ticket-qr.png). Show it to cinema staff at the entrance.
+                        </p>
                     </div>
                 </div>
                 """,
@@ -81,15 +93,35 @@ public class EmailService {
                     booking.getBookingSeats().size(),
                     booking.getBookingSeats().stream().map(s -> s.getSeat().getSeatRow() + s.getSeat().getSeatNumber()).toList(),
                     booking.getTotalAmount().toPlainString(),
-                    booking.getUser().getFullName(),
-                    qrBase64
+                    booking.getUser().getFullName()
             );
 
-            helper.setText(htmlContent, true);
-            mailSender.send(message);
-            log.info("✅ E-Ticket sent successfully to {}", recipient);
+            send(recipient, "Your Cinema E-Ticket: Booking #" + booking.getBookingNumber(), html,
+                    List.of(Map.of("name", "ticket-qr.png", "content", qrData)));
+            log.info("E-Ticket sent successfully to {}", recipient);
         } catch (Exception e) {
-            log.warn("⚠️ Failed to deliver E-Ticket email: {}", e.getMessage());
+            log.warn("Failed to deliver E-Ticket email: {}", e.getMessage());
+        }
+    }
+
+    private void send(String to, String subject, String html, List<Map<String, String>> attachments) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("api-key", apiKey);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("sender", Map.of("name", senderName, "email", senderEmail));
+        body.put("to", List.of(Map.of("email", to)));
+        body.put("subject", subject);
+        body.put("htmlContent", html);
+        if (attachments != null && !attachments.isEmpty()) {
+            body.put("attachment", attachments);
+        }
+
+        try {
+            rest.postForEntity(BREVO_URL, new HttpEntity<>(body, headers), String.class);
+        } catch (HttpStatusCodeException e) {
+            throw new IllegalStateException("Brevo " + e.getStatusCode() + ": " + e.getResponseBodyAsString(), e);
         }
     }
 }
