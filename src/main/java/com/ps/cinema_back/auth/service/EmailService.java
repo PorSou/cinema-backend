@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -17,16 +18,20 @@ import org.springframework.web.client.RestTemplate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
 public class EmailService {
 
-    private static final String BREVO_URL = "https://api.brevo.com/v3/smtp/email";
+    private static final String MAILJET_URL = "https://api.mailjet.com/v3.1/send";
+    private static final Pattern ERROR_STATUS = Pattern.compile("\"Status\"\\s*:\\s*\"error\"");
 
-    @Value("${brevo.api-key}") private String apiKey;
-    @Value("${brevo.sender-email}") private String senderEmail;
-    @Value("${brevo.sender-name:CinemaX}") private String senderName;
+    // Empty defaults so the app still starts if the keys are not configured yet.
+    @Value("${mail.api-key:}") private String apiKey;
+    @Value("${mail.api-secret:}") private String apiSecret;
+    @Value("${mail.sender-email:}") private String senderEmail;
+    @Value("${mail.sender-name:CinemaX}") private String senderName;
 
     private final RestTemplate rest = buildRestTemplate();
 
@@ -37,7 +42,7 @@ public class EmailService {
         return new RestTemplate(factory);
     }
 
-    /** Synchronous on purpose: if it fails, the caller must know. */
+    /** Synchronous on purpose: if sending fails, the caller (register / resend) must know. */
     public void sendOtpEmail(String toEmail, String otpCode) {
         String html = "<div style=\"font-family:Arial,sans-serif;max-width:480px;margin:auto\">"
                 + "<h2>CinemaX verification code</h2>"
@@ -46,7 +51,7 @@ public class EmailService {
                 + "</div>";
         try {
             send(toEmail, "CinemaX - Email Verification Code", html, null);
-            log.info("OTP email sent to {}", toEmail);
+            log.info("OTP email sent to {}", toEmail); // never log the code itself
         } catch (Exception e) {
             log.error("Could not deliver OTP email to '{}': {}", toEmail, e.getMessage());
             throw new BadRequestException("Could not send the verification email. Please try again in a moment.");
@@ -60,7 +65,7 @@ public class EmailService {
 
         try {
             String qr = BakongKhqrHelper.generateQrBase64Image("TICKET:" + booking.getBookingNumber(), 250, 250);
-            // Brevo wants raw base64, so strip a "data:image/png;base64," prefix if the helper adds one
+            // The API wants raw base64, so strip a "data:image/png;base64," prefix if the helper adds one
             String qrData = qr.contains(",") ? qr.substring(qr.indexOf(',') + 1) : qr;
 
             String html = String.format("""
@@ -105,23 +110,40 @@ public class EmailService {
     }
 
     private void send(String to, String subject, String html, List<Map<String, String>> attachments) {
+        if (apiKey.isBlank() || apiSecret.isBlank() || senderEmail.isBlank()) {
+            throw new IllegalStateException(
+                    "Email provider is not configured (set MAIL_API_KEY, MAIL_API_SECRET, MAIL_SENDER_EMAIL)");
+        }
+
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.set("api-key", apiKey);
+        headers.setBasicAuth(apiKey, apiSecret);
 
-        Map<String, Object> body = new HashMap<>();
-        body.put("sender", Map.of("name", senderName, "email", senderEmail));
-        body.put("to", List.of(Map.of("email", to)));
-        body.put("subject", subject);
-        body.put("htmlContent", html);
+        Map<String, Object> message = new HashMap<>();
+        message.put("From", Map.of("Email", senderEmail, "Name", senderName));
+        message.put("To", List.of(Map.of("Email", to)));
+        message.put("Subject", subject);
+        message.put("HTMLPart", html);
         if (attachments != null && !attachments.isEmpty()) {
-            body.put("attachment", attachments);
+            message.put("Attachments", attachments.stream().map(a -> Map.of(
+                    "ContentType", "image/png",
+                    "Filename", a.get("name"),
+                    "Base64Content", a.get("content"))).toList());
         }
 
         try {
-            rest.postForEntity(BREVO_URL, new HttpEntity<>(body, headers), String.class);
+            ResponseEntity<String> response = rest.postForEntity(
+                    MAILJET_URL,
+                    new HttpEntity<>(Map.of("Messages", List.of(message)), headers),
+                    String.class);
+
+            // Mailjet can answer 200 while an individual message failed, so check the body too.
+            String body = response.getBody();
+            if (body != null && ERROR_STATUS.matcher(body).find()) {
+                throw new IllegalStateException("Mailjet rejected the message: " + body);
+            }
         } catch (HttpStatusCodeException e) {
-            throw new IllegalStateException("Brevo " + e.getStatusCode() + ": " + e.getResponseBodyAsString(), e);
+            throw new IllegalStateException("Mailjet " + e.getStatusCode() + ": " + e.getResponseBodyAsString(), e);
         }
     }
 }
