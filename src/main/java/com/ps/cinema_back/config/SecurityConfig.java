@@ -2,10 +2,10 @@ package com.ps.cinema_back.config;
 
 import com.ps.cinema_back.security.JwtAuthenticationFilter;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -25,6 +25,12 @@ import java.util.List;
 public class SecurityConfig {
 
         private final JwtAuthenticationFilter jwtAuthFilter;
+
+        // Comma-separated list of frontend origins allowed to call this API.
+        // Set CORS_ALLOWED_ORIGINS on Railway to change it without touching the code.
+        // (Not final on purpose, so Lombok's constructor ignores it and @Value injects it.)
+        @Value("${cors.allowed-origins}")
+        private String[] allowedOrigins;
 
         @Bean
         public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -411,11 +417,9 @@ public class SecurityConfig {
         public CorsConfigurationSource corsConfigurationSource() {
                 CorsConfiguration configuration = new CorsConfiguration();
 
-                // Allow local and production Vercel frontend origins
-                configuration.setAllowedOrigins(Arrays.asList(
-                        "http://localhost:3000",
-                        "https://cinema-frontend-py8v.vercel.app"
-                ));
+                // Allowed frontend origins come from cors.allowed-origins
+                // (application.properties / the CORS_ALLOWED_ORIGINS variable on Railway)
+                configuration.setAllowedOrigins(Arrays.asList(allowedOrigins));
                 configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
                 configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With", "Accept"));
                 configuration.setAllowCredentials(true);
